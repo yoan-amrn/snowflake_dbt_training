@@ -1,0 +1,44 @@
+# Exemple de pipeline CI/CD (demo J1 - Integration Git & CI/CD).
+# Volontairement HORS de .github/workflows/ : il ne se declenche pas sur ce repo.
+# Pour l'activer : copier dans .github/workflows/deploy.yml et creer les secrets
+# GitHub SNOWFLAKE_ACCOUNT, SNOWFLAKE_USER, SNOWFLAKE_PRIVATE_KEY (user de service,
+# authentification par paire de cles, TYPE = SERVICE).
+name: deploy-snowflake
+
+on:
+  push:
+    branches: [main]
+    paths: ["setup/**", "dbt/**"]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      SNOWFLAKE_CONNECTIONS_CI_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+      SNOWFLAKE_CONNECTIONS_CI_USER: ${{ secrets.SNOWFLAKE_USER }}
+      SNOWFLAKE_CONNECTIONS_CI_AUTHENTICATOR: SNOWFLAKE_JWT
+      SNOWFLAKE_CONNECTIONS_CI_PRIVATE_KEY_RAW: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+      SNOWFLAKE_CONNECTIONS_CI_ROLE: ACCOUNTADMIN
+      SNOWFLAKE_CONNECTIONS_CI_WAREHOUSE: WH_ADMIN
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Snowflake CLI
+        uses: snowflakedb/snowflake-cli-action@v1.5
+        with:
+          default-config-file-path: "demos/ci/config.toml"
+
+      - name: Fetch the Git repository object
+        run: snow git fetch ADMIN.GIT.TRAINING_REPO -c ci
+
+      - name: Dry run (rendered SQL in the logs)
+        run: >
+          snow sql -c ci -q "EXECUTE IMMEDIATE FROM @ADMIN.GIT.TRAINING_REPO/branches/main/setup/deploy.sql
+          USING (nb_participants => 10, init_pwd => '${{ secrets.TRAINING_INIT_PWD }}', credit_quota => 100)
+          DRY_RUN = TRUE"
+
+      - name: Deploy
+        run: >
+          snow sql -c ci -q "EXECUTE IMMEDIATE FROM @ADMIN.GIT.TRAINING_REPO/branches/main/setup/deploy.sql
+          USING (nb_participants => 10, init_pwd => '${{ secrets.TRAINING_INIT_PWD }}', credit_quota => 100)"

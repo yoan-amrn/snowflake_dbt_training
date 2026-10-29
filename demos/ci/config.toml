@@ -1,0 +1,5 @@
+# Configuration Snowflake CLI utilisee par github_actions_deploy.yml.
+# Les valeurs viennent des variables d'environnement SNOWFLAKE_CONNECTIONS_CI_*.
+default_connection_name = "ci"
+
+[connections.ci]

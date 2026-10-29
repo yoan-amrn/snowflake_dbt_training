@@ -1,0 +1,13 @@
+name: formation_tpch
+version: "1.0.0"
+config-version: 2
+profile: formation_tpch
+
+model-paths: ["models"]
+
+models:
+  formation_tpch:
+    staging:
+      +materialized: view
+    marts:
+      +materialized: table

@@ -1,0 +1,15 @@
+# dbt Projects on Snowflake : account/user sont ignores (session courante),
+# mais les champs doivent exister. Cible = schema formateur FORMATION.DBT
+# (demos/J2_dbt_projects.sql). Pour un participant : role R_Pxx, WH_Pxx, SANDBOX.Pxx.
+formation_tpch:
+  target: dev
+  outputs:
+    dev:
+      type: snowflake
+      account: ""
+      user: ""
+      role: FORMATION_ADMIN
+      warehouse: WH_ADMIN
+      database: FORMATION
+      schema: DBT
+      threads: 4
