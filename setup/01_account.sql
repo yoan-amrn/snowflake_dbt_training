@@ -27,8 +27,12 @@ CREATE ROLE IF NOT EXISTS FORMATION_ADMIN       COMMENT = 'Formateur - proprieta
 CREATE ROLE IF NOT EXISTS FORMATION_PARTICIPANT COMMENT = 'Droits communs a tous les participants';
 GRANT ROLE FORMATION_ADMIN       TO ROLE SYSADMIN;
 GRANT ROLE FORMATION_PARTICIPANT TO ROLE FORMATION_ADMIN;
-SET me = CURRENT_USER();
-GRANT ROLE FORMATION_ADMIN       TO USER IDENTIFIER($me);
+-- Pas de variable de session (SET / $var) : non supportee sous EXECUTE IMMEDIATE FROM.
+EXECUTE IMMEDIATE $$
+BEGIN
+  EXECUTE IMMEDIATE 'GRANT ROLE FORMATION_ADMIN TO USER "' || CURRENT_USER() || '"';
+END;
+$$;
 
 -- -----------------------------------------------------------------------------
 -- 2. Warehouses partages (auto-suspend 60 s pour preserver les credits)
