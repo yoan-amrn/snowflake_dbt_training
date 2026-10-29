@@ -91,7 +91,9 @@ GRANT READ  ON GIT REPOSITORY ADMIN.GIT.TRAINING_REPO TO ROLE _ADMIN_GIT_SR;
 GRANT CREATE GIT REPOSITORY ON SCHEMA ADMIN.GIT TO ROLE _ADMIN_GIT_SFULL;
 GRANT CREATE SECRET         ON SCHEMA ADMIN.GIT TO ROLE _ADMIN_GIT_SFULL;
 -- WRITE = ALTER GIT REPOSITORY ... FETCH par le formateur
-GRANT WRITE ON GIT REPOSITORY ADMIN.GIT.TRAINING_REPO TO ROLE _ADMIN_GIT_SFULL;
+-- READ et WRITE dans la meme instruction : Snowflake exige READ accorde directement
+-- au role avant WRITE (l'heritage de _SR ne suffit pas).
+GRANT READ, WRITE ON GIT REPOSITORY ADMIN.GIT.TRAINING_REPO TO ROLE _ADMIN_GIT_SFULL;
 
 -- -----------------------------------------------------------------------------
 -- 5. Schema ADMIN.SECURITY (policies / tags transverses)
