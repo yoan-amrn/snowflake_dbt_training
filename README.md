@@ -18,7 +18,7 @@ Prérequis : un compte trial **Enterprise**, de préférence AWS EU, et ce repo 
    | Paramètre         | Défaut                 | Rôle                                      |
    |-------------------|------------------------|-------------------------------------------|
    | `nb_participants` | `10`                   | utilisateurs `P01`..`Pnn`                 |
-   | `init_pwd`        | `Formation-Snow-2026!` | mot de passe initial (changé à la 1re connexion) |
+   | `init_pwd`        | *(à saisir)* | mot de passe initial (changé à la 1re connexion), jamais commité : à remplacer dans la worksheet ou fourni par le secret GitHub `TRAINING_INIT_PWD` |
    | `credit_quota`    | `100`                  | resource monitor du compte (crédits/mois) |
 
    Pour vérifier le rendu sans rien exécuter, ajouter `DRY_RUN = TRUE`.

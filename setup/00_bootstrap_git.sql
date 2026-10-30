@@ -55,7 +55,11 @@ LS @ADMIN.GIT.TRAINING_REPO/branches/main/setup/;
 -- -----------------------------------------------------------------------------
 -- 4. Etape suivante : deployer tout le socle depuis le repo
 --    (ouvrir setup/deploy.sql pour ajuster les parametres si besoin)
+--    Le mot de passe initial n'est JAMAIS commite : remplacer <mot_de_passe_initial>
+--    dans la worksheet au moment de l'execution (sans sauvegarder), ou lancer le
+--    deploy depuis GitHub Actions avec le secret TRAINING_INIT_PWD
+--    (voir demos/ci/github_actions_deploy.yml).
 -- -----------------------------------------------------------------------------
 USE ROLE ACCOUNTADMIN;
 EXECUTE IMMEDIATE FROM @ADMIN.GIT.TRAINING_REPO/branches/main/setup/deploy.sql
-  USING (nb_participants => 10, init_pwd => 'Formation-Snow-2026!', credit_quota => 100);
+  USING (nb_participants => 10, init_pwd => '<mot_de_passe_initial>', credit_quota => 100);

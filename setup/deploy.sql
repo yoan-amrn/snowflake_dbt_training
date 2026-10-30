@@ -4,7 +4,7 @@
 
      ALTER GIT REPOSITORY ADMIN.GIT.TRAINING_REPO FETCH;
      EXECUTE IMMEDIATE FROM @ADMIN.GIT.TRAINING_REPO/branches/main/setup/deploy.sql
-       USING (nb_participants => 10, init_pwd => 'Formation-Snow-2026!', credit_quota => 100);
+       USING (nb_participants => 10, init_pwd => '<mot_de_passe_initial>', credit_quota => 100);
 
    Parametres :
      nb_participants : nombre d'utilisateurs P01..Pnn
