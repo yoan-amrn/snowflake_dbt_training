@@ -85,7 +85,8 @@ with tab_temps:
             {base} GROUP BY 1, 2 ORDER BY 1""",
         params,
     )
-    st.line_chart(df, x="MOIS", y="CA_MUSD", color="REGION", height=400)
+    # une colonne par region (pas de parametre color= sur la version Streamlit par defaut de SiS)
+    st.line_chart(df.pivot(index="MOIS", columns="REGION", values="CA_MUSD"), height=400)
 
 with tab_clients:
     df = run(
