@@ -3,7 +3,6 @@
    Lance a part (pas dans deploy.sql) car il consomme des credits :
      EXECUTE IMMEDIATE FROM @ADMIN.GIT.TRAINING_REPO/branches/main/setup/05_lab_prep.sql;
    - tables volumineuses pour le LAB 3 (clustering, Search Optimization)
-   - verification de la disponibilite des modeles Cortex
    Cout estime : ~3-5 credits (CTAS sur warehouse LARGE + build SOS serverless)
    ============================================================================= */
 
@@ -48,12 +47,4 @@ FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()));
 USE ROLE SECURITYADMIN;
 GRANT SELECT ON ALL TABLES IN SCHEMA FORMATION.CURATED TO ROLE _FORMATION_CURATED_SR;
 USE ROLE FORMATION_ADMIN;
-
--- -----------------------------------------------------------------------------
--- 2. Verifications Cortex (region du compte / cross-region)
--- -----------------------------------------------------------------------------
--- Modeles utilises dans le LAB 3 et l'app Streamlit
-SELECT AI_COMPLETE('llama3.1-8b', 'Reponds juste OK') AS TEST_CORTEX;
-SELECT AI_SENTIMENT('Livraison rapide, produit parfait') AS TEST_SENTIMENT;
--- Si erreur "model not available in region" :
--- USE ROLE ACCOUNTADMIN; ALTER ACCOUNT SET CORTEX_ENABLED_CROSS_REGION = 'AWS_EU';
+-- (Cortex AI absent du trial : plus de verification ici, voir demos/J2_cortex_search_analyst_agent.sql)

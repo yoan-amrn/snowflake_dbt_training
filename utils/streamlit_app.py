@@ -1,5 +1,5 @@
 """
-LAB 3 - Exercice 7 : app Streamlit in Snowflake sur TPCH
+LAB 3 - Exercice 6 : app Streamlit in Snowflake sur TPCH
 Copier-coller dans l'editeur Streamlit de Snowsight (packages par defaut suffisants).
 """
 import streamlit as st
@@ -68,9 +68,7 @@ c4.metric("Panier moyen", f"{kpi.CA / max(kpi.NB_CMD, 1):,.0f} $".replace(",", "
 # ---------------------------------------------------------------------------
 # Onglets
 # ---------------------------------------------------------------------------
-tab_geo, tab_temps, tab_clients, tab_avis = st.tabs(
-    ["Par nation", "Evolution", "Clients", "Avis (Cortex)"]
-)
+tab_geo, tab_temps, tab_clients = st.tabs(["Par nation", "Evolution", "Clients"])
 
 with tab_geo:
     df = run(
@@ -99,7 +97,7 @@ with tab_clients:
     st.subheader("Top 20 clients")
     st.dataframe(df, use_container_width=True, hide_index=True)
 
-    # Exercice 7.3 : table gouvernee du LAB 1 (schema courant de l'app)
+    # Exercice 6.3 : table gouvernee du LAB 1 (schema courant de l'app)
     st.subheader("Table CUSTOMER du LAB 1 (gouvernee)")
     try:
         gov = run("SELECT CUSTOMER_NAME, EMAIL, PHONE, ACCOUNT_BALANCE, REGION FROM CUSTOMER LIMIT 10")
@@ -107,19 +105,3 @@ with tab_clients:
         st.caption("Masquage / filtrage evalues avec les droits du PROPRIETAIRE de l'app.")
     except Exception as e:  # table absente si le LAB 1 n'a pas ete fait
         st.info(f"Table CUSTOMER introuvable dans ce schema ({e.__class__.__name__}).")
-
-with tab_avis:
-    try:
-        avis = run("SELECT P_NAME, THEME, SENTIMENT, REVIEW FROM REVIEWS_ENRICHED ORDER BY SENTIMENT")
-    except Exception:
-        st.info("Executez d'abord l'exercice 5 du LAB 3 (table REVIEWS_ENRICHED).")
-        st.stop()
-
-    st.dataframe(avis, use_container_width=True, hide_index=True)
-    question = st.text_input("Posez une question sur ces avis", "Quels sont les irritants les plus frequents ?")
-    if st.button("Demander a Cortex"):
-        corpus = "\n".join(f"- {r}" for r in avis["REVIEW"].tolist())
-        prompt = f"Voici des avis clients :\n{corpus}\n\nQuestion : {question}\nReponds en francais, en 5 lignes maximum."
-        with st.spinner("Cortex reflechit..."):
-            rep = session.sql("SELECT AI_COMPLETE('llama3.1-8b', ?) AS R", params=[prompt]).collect()[0]["R"]
-        st.success(rep)

@@ -45,7 +45,7 @@ EXECUTE IMMEDIATE FROM @ADMIN.GIT.TRAINING_REPO/branches/main/setup/99_teardown.
 | `02_formation_schemas.sql` | schémas `FORMATION.{COMMON,RAW,CURATED,ICEBERG,DBT}` en managed access + rôles techniques `_SR/_SW/_SFULL`, privilèges compte des labs |
 | `03_participants.sql` | par participant : user `Pxx`, rôle `R_Pxx`, warehouse `WH_Pxx` (XS), schéma `SANDBOX.Pxx` |
 | `04_data.sql` | `FORMATION.RAW.CUSTOMER` (TPCH + PII fictives), stage `FORMATION.COMMON.STG_FILES` (CSV/JSON/Parquet), file formats, `ORDERS_LANDING` + task « Snowpipe simulé » |
-| `05_lab_prep.sql` | tables LINEITEM / ORDERS SF10 (clustering, SOS), test Cortex. **Lancé à part.** |
+| `05_lab_prep.sql` | tables LINEITEM / ORDERS SF10 (clustering, SOS). **Lancé à part.** |
 | `06_finops.sql` | resource monitor `RM_FORMATION` |
 
 ## Côté participants
@@ -58,7 +58,7 @@ EXECUTE IMMEDIATE FROM @ADMIN.GIT.TRAINING_REPO/branches/main/setup/99_teardown.
 
 ## Programme et supports
 
-Les démos marquées **PAID** utilisent des fonctions absentes du trial (EAI, Cortex Agents,
+Les démos marquées **PAID** utilisent des fonctions absentes du trial (EAI, Cortex AI,
 Openflow, Snowpipe S3). Elles se jouent sur un compte payant séparé. Chaque script démarre
 par son propre mini-setup (`DEMO_FORMATION`, `WH_DEMO`).
 
@@ -77,9 +77,9 @@ par son propre mini-setup (`DEMO_FORMATION`, `WH_DEMO`).
 | J2 matin | 45 min | Streams & Tasks, Dynamic Tables, dbt | **LAB 2 ex. 3 à 8** + `demos/J2_dbt_projects.sql` | TRIAL |
 | J2 matin | 30 min | External access integration / Secrets | `demos/J2_eai_secrets.sql` | PAID |
 | J2 après-midi | 60 min | Performance (Query Profile, caches, clustering, SOS) | **LAB 3 ex. 1 à 4** | TRIAL |
-| J2 après-midi | 60 min | Cortex AI functions, ML Forecast / Anomaly | **LAB 3 ex. 5 et 6** | TRIAL |
-| J2 après-midi | – | Cortex Search / Analyst / Agents, Cortex Code | `demos/J2_cortex_search_analyst_agent.sql` | PAID |
-| J2 après-midi | 30 min | Streamlit in Snowflake | **LAB 3 ex. 7** + `utils/streamlit_app.py` | TRIAL |
+| J2 après-midi | 15 min | ML Forecast / Anomaly | **LAB 3 ex. 5** | TRIAL |
+| J2 après-midi | 45 min | Cortex AI functions, Search / Analyst / Agents, Cortex Code | `demos/J2_cortex_search_analyst_agent.sql` | PAID |
+| J2 après-midi | 30 min | Streamlit in Snowflake | **LAB 3 ex. 6** + `utils/streamlit_app.py` | TRIAL |
 | J2 après-midi | 60 min | Synthèse & Q/A | – | – |
 
 ## Organisation du repo
@@ -90,7 +90,7 @@ formateur/  corrigés des labs (source de vérité, blocs -- >>> SOLUTION / -- <
 labs/       énoncés participants, générés : python utils/make_enonces.py
 demos/      démos formateur (en-tête : compte TRIAL ou PAID)
 dbt/        projet dbt (TPCH -> FORMATION.DBT), déployé par demos/J2_dbt_projects.sql
-utils/      make_enonces.py, streamlit_app.py (LAB 3 ex. 7)
+utils/      make_enonces.py, streamlit_app.py (LAB 3 ex. 6)
 ```
 
 **Modifier un lab** : éditer uniquement `formateur/LABx_*_corrige.sql`, puis lancer
@@ -99,11 +99,11 @@ utils/      make_enonces.py, streamlit_app.py (LAB 3 ex. 7)
 ## Coûts et points de vigilance
 
 - Le trial offre environ 400 $. Le socle et les labs consomment de l'ordre de 15 à 25 crédits
-  pour 10 participants, la majeure partie au LAB 3 (SF100, Cortex).
+  pour 10 participants, la majeure partie au LAB 3 (SF100).
 - À la fin de chaque lab, exécuter son dernier bloc, qui suspend les tasks, les dynamic tables
   et remet le warehouse en XS. Côté formateur, suspendre aussi `FORMATION.RAW.T_SIMULATED_SNOWPIPE`
   après le LAB 2.
-- Le resource monitor ne couvre que les warehouses. Le serverless (tasks, SOS, Cortex) se suit
+- Le resource monitor ne couvre que les warehouses. Le serverless (tasks, SOS) se suit
   avec `demos/J1_finops.sql`.
-- Cortex : si un modèle n'est pas disponible dans la région,
-  `ALTER ACCOUNT SET CORTEX_ENABLED_CROSS_REGION = 'AWS_EU';`.
+- Cortex AI n'est pas disponible sur le trial : tout Cortex se joue sur le compte payant
+  (si un modèle y manque : `ALTER ACCOUNT SET CORTEX_ENABLED_CROSS_REGION = 'AWS_EU';`).

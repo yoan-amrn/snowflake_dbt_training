@@ -1,9 +1,10 @@
 /* =============================================================================
-   LAB 3 - PERFORMANCE - CORTEX AI - ML - STREAMLIT  (J2 apres-midi, ~2h)
+   LAB 3 - PERFORMANCE - ML - STREAMLIT  (J2 apres-midi, ~1h45)
    Jeu de donnees : TPCH SF10 / SF100 (sample data) + tables preparees par le
    formateur dans FORMATION.CURATED (LINEITEM_UNSORTED, LINEITEM_BY_SHIPDATE,
    ORDERS_SF10, ORDERS_SF10_SOS) par setup/05_lab_prep.sql la veille.
-   Cortex Search / Analyst / Agents : demo formateur (demos/J2_cortex_search_analyst_agent.sql)
+   Cortex AI Functions / Search / Analyst / Agents : absents du trial ->
+   demo formateur sur compte payant (demos/J2_cortex_search_analyst_agent.sql)
    (!) Remettez votre warehouse en XSMALL a la fin (dernier bloc).
    ============================================================================= */
 
@@ -75,23 +76,7 @@ USE SCHEMA    IDENTIFIER($my_schema);
 
 
 -- =============================================================================
--- Exercice 5 - Cortex AI Functions sur des avis clients (25 min)
--- 1. Generez REVIEWS : pour 30 pieces de TPCH_SF1.PART, un avis client court en
---    francais (ton negatif / neutre / enthousiaste selon MOD(P_PARTKEY, 3)) avec AI_COMPLETE.
--- 2. Enrichissez chaque avis :
---    - score de sentiment (SNOWFLAKE.CORTEX.SENTIMENT) ;
---    - theme via AI_CLASSIFY parmi : qualite, livraison, prix, service client ;
---    - booleen "probleme de livraison" via AI_FILTER ;
---    - traduction anglaise (SNOWFLAKE.CORTEX.TRANSLATE).
--- 3. Synthese : les 3 principaux irritants, en une requete (AI_AGG).
--- (!) Gardez de petits volumes : facturation au token.
--- =============================================================================
--- A VOUS DE JOUER
-
-
-
--- =============================================================================
--- Exercice 6 - ML natif : Forecast & Anomaly Detection (15 min)
+-- Exercice 5 - ML natif : Forecast & Anomaly Detection (15 min)
 -- 1. Vue V_DAILY_REVENUE (DS TIMESTAMP_NTZ, Y) : CA journalier TPCH_SF1.ORDERS
 --    entre 1996-01-01 et 1998-07-31.
 -- 2. Entrainez un modele SNOWFLAKE.ML.FORECAST et prevoyez 30 jours.
@@ -103,10 +88,11 @@ USE SCHEMA    IDENTIFIER($my_schema);
 
 
 -- =============================================================================
--- Exercice 7 - Streamlit in Snowflake (25 min)
+-- Exercice 6 - Streamlit in Snowflake (25 min)
 -- 1. Snowsight > Projects > Streamlit > + Streamlit App :
 --    nom APP_TPCH, emplacement SANDBOX.<vous>, warehouse WH_<vous>.
--- 2. Remplacez le code par celui du fichier streamlit_app.py fourni.
+-- 2. Remplacez le code par celui du fichier utils/streamlit_app.py du repo de formation
+--    (Projects > Workspaces > From Git repository > utils/streamlit_app.py).
 -- 3. Testez les filtres. Ajoutez a l'onglet "Clients" la table CUSTOMER de votre
 --    schema (LAB 1) : les donnees sont-elles masquees ? Pourquoi ?
 -- 4. Accordez USAGE sur l'app au role ANALYST et testez en ANALYST.

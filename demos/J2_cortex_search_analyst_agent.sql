@@ -1,5 +1,5 @@
 /* =============================================================================
-   DEMO J2 apres-midi - CORTEX SEARCH, CORTEX ANALYST, CORTEX AGENTS, CORTEX CODE
+   DEMO J2 apres-midi - CORTEX AI FUNCTIONS, SEARCH, ANALYST, AGENTS, CORTEX CODE
    Compte : PAID (fonctionnalites non disponibles / limitees sur le trial)
    Role   : SYSADMIN (+ CORTEX_USER, accorde a PUBLIC par defaut)
    Fil rouge : un agent qui repond a la fois sur les CHIFFRES (TPCH, via Analyst
@@ -16,7 +16,7 @@ USE SCHEMA DEMO_FORMATION.CORTEX;
 -- ALTER ACCOUNT SET CORTEX_ENABLED_CROSS_REGION = 'AWS_EU';   -- si modele absent de la region
 
 -- -----------------------------------------------------------------------------
--- 0. Donnees : avis clients generes (comme LAB 3 ex.5) + tables TPCH locales
+-- 0. Donnees : avis clients generes par AI_COMPLETE + tables TPCH locales
 -- -----------------------------------------------------------------------------
 CREATE OR REPLACE TABLE REVIEWS AS
 SELECT P_PARTKEY AS REVIEW_ID, P_NAME,
@@ -33,6 +33,30 @@ CREATE OR REPLACE TABLE ORDERS   AS SELECT * FROM SNOWFLAKE_SAMPLE_DATA.TPCH_SF1
 CREATE OR REPLACE TABLE CUSTOMER AS SELECT * FROM SNOWFLAKE_SAMPLE_DATA.TPCH_SF1.CUSTOMER;
 CREATE OR REPLACE TABLE NATION   AS SELECT * FROM SNOWFLAKE_SAMPLE_DATA.TPCH_SF1.NATION;
 CREATE OR REPLACE TABLE REGION   AS SELECT * FROM SNOWFLAKE_SAMPLE_DATA.TPCH_SF1.REGION;
+
+-- -----------------------------------------------------------------------------
+-- 0bis. CORTEX AI FUNCTIONS : enrichir les avis en SQL (ex-LAB 3 ex.5, absent du trial)
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE TABLE REVIEWS_ENRICHED AS
+SELECT REVIEW_ID, P_NAME, TON, REVIEW,
+       SNOWFLAKE.CORTEX.SENTIMENT(REVIEW)                                                       AS SENTIMENT,
+       AI_CLASSIFY(REVIEW, ['qualite', 'livraison', 'prix', 'service client']):labels[0]::STRING  AS THEME,
+       AI_FILTER(PROMPT('Cet avis client mentionne-t-il un probleme de livraison ? {0}', REVIEW)) AS PB_LIVRAISON,
+       SNOWFLAKE.CORTEX.TRANSLATE(REVIEW, 'fr', 'en')                                           AS REVIEW_EN
+FROM REVIEWS;
+
+SELECT TON, ROUND(AVG(SENTIMENT), 2) AS SENTIMENT_MOYEN, COUNT(*)
+FROM REVIEWS_ENRICHED GROUP BY 1;            -- coherence ton demande / sentiment mesure ?
+
+SELECT THEME, COUNT(*), COUNT_IF(PB_LIVRAISON) AS NB_PB_LIVRAISON
+FROM REVIEWS_ENRICHED GROUP BY 1 ORDER BY 2 DESC;
+
+SELECT AI_AGG(REVIEW, 'Liste en francais les 3 principaux irritants clients, en une phrase chacun.') AS SYNTHESE
+FROM REVIEWS_ENRICHED WHERE SENTIMENT < 0;
+
+-- Notes : SENTIMENT est optimise pour l'anglais (comparer sur REVIEW_EN) ;
+-- le modele se choisit selon cout/qualite (llama3.1-8b economique, mistral-large2
+-- ou claude-* plus qualitatifs). Facturation au token : garder de petits volumes.
 
 -- -----------------------------------------------------------------------------
 -- 1. CORTEX SEARCH : recherche hybride (vectorielle + mots-cles) managee

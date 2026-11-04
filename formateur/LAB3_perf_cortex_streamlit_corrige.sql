@@ -1,9 +1,10 @@
 /* =============================================================================
-   LAB 3 - PERFORMANCE - CORTEX AI - ML - STREAMLIT  (J2 apres-midi, ~2h)
+   LAB 3 - PERFORMANCE - ML - STREAMLIT  (J2 apres-midi, ~1h45)
    Jeu de donnees : TPCH SF10 / SF100 (sample data) + tables preparees par le
    formateur dans FORMATION.CURATED (LINEITEM_UNSORTED, LINEITEM_BY_SHIPDATE,
    ORDERS_SF10, ORDERS_SF10_SOS) par setup/05_lab_prep.sql la veille.
-   Cortex Search / Analyst / Agents : demo formateur (demos/J2_cortex_search_analyst_agent.sql)
+   Cortex AI Functions / Search / Analyst / Agents : absents du trial ->
+   demo formateur sur compte payant (demos/J2_cortex_search_analyst_agent.sql)
    (!) Remettez votre warehouse en XSMALL a la fin (dernier bloc).
    ============================================================================= */
 
@@ -163,56 +164,7 @@ SELECT SYSTEM$ESTIMATE_SEARCH_OPTIMIZATION_COSTS('FORMATION.CURATED.ORDERS_SF10'
 -- <<< SOLUTION
 
 -- =============================================================================
--- Exercice 5 - Cortex AI Functions sur des avis clients (25 min)
--- 1. Generez REVIEWS : pour 30 pieces de TPCH_SF1.PART, un avis client court en
---    francais (ton negatif / neutre / enthousiaste selon MOD(P_PARTKEY, 3)) avec AI_COMPLETE.
--- 2. Enrichissez chaque avis :
---    - score de sentiment (SNOWFLAKE.CORTEX.SENTIMENT) ;
---    - theme via AI_CLASSIFY parmi : qualite, livraison, prix, service client ;
---    - booleen "probleme de livraison" via AI_FILTER ;
---    - traduction anglaise (SNOWFLAKE.CORTEX.TRANSLATE).
--- 3. Synthese : les 3 principaux irritants, en une requete (AI_AGG).
--- (!) Gardez de petits volumes : facturation au token.
--- =============================================================================
--- >>> SOLUTION
-CREATE OR REPLACE TABLE REVIEWS AS
-SELECT P_PARTKEY, P_NAME,
-       CASE MOD(P_PARTKEY, 3) WHEN 0 THEN 'tres negatif' WHEN 1 THEN 'neutre' ELSE 'enthousiaste' END AS TON_DEMANDE,
-       AI_COMPLETE('llama3.1-8b',
-         'Redige un avis client de 2 phrases, en francais, au ton ' || TON_DEMANDE ||
-         ', sur le produit "' || P_NAME || '". Evoque la qualite, la livraison, le prix ou le service client. ' ||
-         'Reponds uniquement par l''avis.') AS REVIEW
-FROM SNOWFLAKE_SAMPLE_DATA.TPCH_SF1.PART
-ORDER BY P_PARTKEY
-LIMIT 30;
-
-SELECT * FROM REVIEWS LIMIT 5;
-
-CREATE OR REPLACE TABLE REVIEWS_ENRICHED AS
-SELECT P_PARTKEY, P_NAME, TON_DEMANDE, REVIEW,
-       SNOWFLAKE.CORTEX.SENTIMENT(REVIEW)                                                       AS SENTIMENT,
-       AI_CLASSIFY(REVIEW, ['qualite', 'livraison', 'prix', 'service client']):labels[0]::STRING  AS THEME,
-       AI_FILTER(PROMPT('Cet avis client mentionne-t-il un probleme de livraison ? {0}', REVIEW)) AS PB_LIVRAISON,
-       SNOWFLAKE.CORTEX.TRANSLATE(REVIEW, 'fr', 'en')                                           AS REVIEW_EN
-FROM REVIEWS;
-
-SELECT TON_DEMANDE, ROUND(AVG(SENTIMENT), 2) AS SENTIMENT_MOYEN, COUNT(*)
-FROM REVIEWS_ENRICHED GROUP BY 1;            -- coherence ton demande / sentiment mesure ?
-
-SELECT THEME, COUNT(*), COUNT_IF(PB_LIVRAISON) AS NB_PB_LIVRAISON
-FROM REVIEWS_ENRICHED GROUP BY 1 ORDER BY 2 DESC;
-
-SELECT AI_AGG(REVIEW, 'Liste en francais les 3 principaux irritants clients, en une phrase chacun.') AS SYNTHESE
-FROM REVIEWS_ENRICHED WHERE SENTIMENT < 0;
-
--- Notes : SENTIMENT est optimise pour l'anglais (comparer sur REVIEW_EN) ;
--- le modele se choisit selon cout/qualite (llama3.1-8b economique, mistral-large2
--- ou claude-* plus qualitatifs). Suivi des couts :
--- SNOWFLAKE.ACCOUNT_USAGE.CORTEX_FUNCTIONS_USAGE_HISTORY (latence ~1h).
--- <<< SOLUTION
-
--- =============================================================================
--- Exercice 6 - ML natif : Forecast & Anomaly Detection (15 min)
+-- Exercice 5 - ML natif : Forecast & Anomaly Detection (15 min)
 -- 1. Vue V_DAILY_REVENUE (DS TIMESTAMP_NTZ, Y) : CA journalier TPCH_SF1.ORDERS
 --    entre 1996-01-01 et 1998-07-31.
 -- 2. Entrainez un modele SNOWFLAKE.ML.FORECAST et prevoyez 30 jours.
@@ -260,20 +212,20 @@ SELECT TS, Y, FORECAST, IS_ANOMALY FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHER
 -- <<< SOLUTION
 
 -- =============================================================================
--- Exercice 7 - Streamlit in Snowflake (25 min)
+-- Exercice 6 - Streamlit in Snowflake (25 min)
 -- 1. Snowsight > Projects > Streamlit > + Streamlit App :
 --    nom APP_TPCH, emplacement SANDBOX.<vous>, warehouse WH_<vous>.
--- 2. Remplacez le code par celui du fichier streamlit_app.py fourni.
+-- 2. Remplacez le code par celui du fichier utils/streamlit_app.py du repo de formation
+--    (Projects > Workspaces > From Git repository > utils/streamlit_app.py).
 -- 3. Testez les filtres. Ajoutez a l'onglet "Clients" la table CUSTOMER de votre
 --    schema (LAB 1) : les donnees sont-elles masquees ? Pourquoi ?
 -- 4. Accordez USAGE sur l'app au role ANALYST et testez en ANALYST.
 -- =============================================================================
 -- >>> SOLUTION
--- Alternative SQL au point 1 (code depose sur un stage) :
--- CREATE STAGE IF NOT EXISTS STG_APPS;
--- PUT file://streamlit_app.py @STG_APPS/tpch_app AUTO_COMPRESS = FALSE OVERWRITE = TRUE;  -- SnowSQL / Snowflake CLI
+-- Alternative SQL aux points 1-2 : creer l'app directement depuis le repo Git
+-- (le dossier utils/ est copie dans l'app ; aucun outil local necessaire)
 -- CREATE OR REPLACE STREAMLIT APP_TPCH
---   FROM '@STG_APPS/tpch_app' MAIN_FILE = 'streamlit_app.py'
+--   FROM '@ADMIN.GIT.TRAINING_REPO/branches/main/utils' MAIN_FILE = 'streamlit_app.py'
 --   QUERY_WAREHOUSE = WH_P01;
 
 -- Point 3 : l'app s'execute avec les droits de son PROPRIETAIRE (owner's rights).
