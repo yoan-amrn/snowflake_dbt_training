@@ -51,7 +51,7 @@ USE SCHEMA    IDENTIFIER($my_schema);
 -- Exercice 2 - Tables Iceberg managees par Snowflake (15 min)
 -- (!) Si le compte refuse EXTERNAL_VOLUME = SNOWFLAKE_MANAGED : demo formateur.
 -- 1. Creez la table Iceberg ORDERS_ICEBERG (memes colonnes que ORDERS_CSV),
---    catalogue Snowflake, stockage Snowflake (pas de bucket S3), BASE_LOCATION 'orders_iceberg'.
+--    catalogue Snowflake, stockage Snowflake (pas de bucket S3, pas de BASE_LOCATION).
 -- 2. Alimentez-la depuis ORDERS_CSV, puis faites un UPDATE.
 -- 3. Recuperez l'emplacement des metadonnees Iceberg (SYSTEM$GET_ICEBERG_TABLE_INFORMATION).
 -- 4. Interrogez la table telle qu'elle etait avant l'UPDATE (time travel).

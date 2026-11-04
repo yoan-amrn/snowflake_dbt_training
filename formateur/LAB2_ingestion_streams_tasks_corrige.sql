@@ -127,7 +127,7 @@ GROUP BY 1 ORDER BY 3 DESC;
 -- Exercice 2 - Tables Iceberg managees par Snowflake (15 min)
 -- (!) Si le compte refuse EXTERNAL_VOLUME = SNOWFLAKE_MANAGED : demo formateur.
 -- 1. Creez la table Iceberg ORDERS_ICEBERG (memes colonnes que ORDERS_CSV),
---    catalogue Snowflake, stockage Snowflake (pas de bucket S3), BASE_LOCATION 'orders_iceberg'.
+--    catalogue Snowflake, stockage Snowflake (pas de bucket S3, pas de BASE_LOCATION).
 -- 2. Alimentez-la depuis ORDERS_CSV, puis faites un UPDATE.
 -- 3. Recuperez l'emplacement des metadonnees Iceberg (SYSTEM$GET_ICEBERG_TABLE_INFORMATION).
 -- 4. Interrogez la table telle qu'elle etait avant l'UPDATE (time travel).
@@ -139,8 +139,7 @@ CREATE OR REPLACE ICEBERG TABLE ORDERS_ICEBERG (
   O_TOTALPRICE NUMBER(12,2), O_ORDERDATE DATE, O_ORDERPRIORITY STRING
 )
   CATALOG = 'SNOWFLAKE'
-  EXTERNAL_VOLUME = SNOWFLAKE_MANAGED
-  BASE_LOCATION = 'orders_iceberg';
+  EXTERNAL_VOLUME = SNOWFLAKE_MANAGED;   -- pas de BASE_LOCATION : chemin gere par Snowflake
 
 INSERT INTO ORDERS_ICEBERG SELECT * FROM ORDERS_CSV;
 SET avant_update = CURRENT_TIMESTAMP();
