@@ -1,6 +1,7 @@
 """
 LAB 3 - Exercice 6 : app Streamlit in Snowflake sur TPCH
 Copier-coller dans l'editeur Streamlit de Snowsight (packages par defaut suffisants).
+Compatible avec la version Streamlit par defaut de SiS (< 1.23) : pas de color=, hide_index=...
 """
 import streamlit as st
 from snowflake.snowpark.context import get_active_session
@@ -96,13 +97,13 @@ with tab_clients:
         params,
     )
     st.subheader("Top 20 clients")
-    st.dataframe(df, use_container_width=True, hide_index=True)
+    st.dataframe(df, use_container_width=True)
 
     # Exercice 6.3 : table gouvernee du LAB 1 (schema courant de l'app)
     st.subheader("Table CUSTOMER du LAB 1 (gouvernee)")
     try:
         gov = run("SELECT CUSTOMER_NAME, EMAIL, PHONE, ACCOUNT_BALANCE, REGION FROM CUSTOMER LIMIT 10")
-        st.dataframe(gov, use_container_width=True, hide_index=True)
+        st.dataframe(gov, use_container_width=True)
         st.caption("Masquage / filtrage evalues avec les droits du PROPRIETAIRE de l'app.")
     except Exception as e:  # table absente si le LAB 1 n'a pas ete fait
         st.info(f"Table CUSTOMER introuvable dans ce schema ({e.__class__.__name__}).")
