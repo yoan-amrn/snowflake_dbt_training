@@ -1,0 +1,12 @@
+[project]
+name = "cockpit-pannes-reseau"
+version = "1.0.0"
+description = "Démo Cortex Agent - cockpit fiabilité du réseau métro / tram de Lyon (Streamlit in Snowflake)"
+requires-python = ">=3.11"
+dependencies = [
+    "streamlit==1.52.2",
+    "snowflake-snowpark-python>=1.20",
+    "pandas>=2.0",
+    "altair>=5.0",
+    "requests>=2.31",
+]

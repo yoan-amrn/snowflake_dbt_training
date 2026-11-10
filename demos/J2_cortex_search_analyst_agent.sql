@@ -8,11 +8,11 @@
    ============================================================================= */
 
 USE ROLE SYSADMIN;
-CREATE WAREHOUSE IF NOT EXISTS WH_DEMO WAREHOUSE_SIZE = XSMALL AUTO_SUSPEND = 60 INITIALLY_SUSPENDED = TRUE;
-USE WAREHOUSE WH_DEMO;
-CREATE DATABASE IF NOT EXISTS DEMO_FORMATION;
-CREATE SCHEMA IF NOT EXISTS DEMO_FORMATION.CORTEX;
-USE SCHEMA DEMO_FORMATION.CORTEX;
+-- CREATE WAREHOUSE IF NOT EXISTS COMPUTE_WH WAREHOUSE_SIZE = XSMALL AUTO_SUSPEND = 60 INITIALLY_SUSPENDED = TRUE;
+USE WAREHOUSE COMPUTE_WH;
+CREATE DATABASE IF NOT EXISTS DB_YAR;
+CREATE SCHEMA IF NOT EXISTS DB_YAR.CORTEX;
+USE SCHEMA DB_YAR.CORTEX;
 -- ALTER ACCOUNT SET CORTEX_ENABLED_CROSS_REGION = 'AWS_EU';   -- si modele absent de la region
 
 -- -----------------------------------------------------------------------------
@@ -65,7 +65,7 @@ FROM REVIEWS_ENRICHED WHERE SENTIMENT < 0;
 CREATE OR REPLACE CORTEX SEARCH SERVICE REVIEWS_SEARCH
   ON REVIEW
   ATTRIBUTES TON
-  WAREHOUSE = WH_DEMO
+  WAREHOUSE = COMPUTE_WH
   TARGET_LAG = '1 day'
 AS
 SELECT REVIEW_ID, P_NAME, TON, REVIEW FROM REVIEWS;
@@ -73,7 +73,7 @@ SELECT REVIEW_ID, P_NAME, TON, REVIEW FROM REVIEWS;
 SHOW CORTEX SEARCH SERVICES;
 
 SELECT PARSE_JSON(SNOWFLAKE.CORTEX.SEARCH_PREVIEW(
-  'DEMO_FORMATION.CORTEX.REVIEWS_SEARCH',
+  'DB_YAR.CORTEX.REVIEWS_SEARCH',
   '{"query": "colis arrive en retard ou abime", "columns": ["P_NAME", "TON", "REVIEW"], "limit": 5}'
 )):results AS RESULTATS;
 -- Noter : la requete ne contient pas forcement les mots de l'avis (semantique).
@@ -85,10 +85,10 @@ SELECT PARSE_JSON(SNOWFLAKE.CORTEX.SEARCH_PREVIEW(
 -- -----------------------------------------------------------------------------
 CREATE OR REPLACE SEMANTIC VIEW SV_TPCH_SALES
   TABLES (
-    orders   AS DEMO_FORMATION.CORTEX.ORDERS   PRIMARY KEY (O_ORDERKEY) COMMENT = 'Commandes clients',
-    customer AS DEMO_FORMATION.CORTEX.CUSTOMER PRIMARY KEY (C_CUSTKEY)  COMMENT = 'Clients',
-    nation   AS DEMO_FORMATION.CORTEX.NATION   PRIMARY KEY (N_NATIONKEY) COMMENT = 'Pays',
-    region   AS DEMO_FORMATION.CORTEX.REGION   PRIMARY KEY (R_REGIONKEY) COMMENT = 'Regions du monde'
+    orders   AS DB_YAR.CORTEX.ORDERS   PRIMARY KEY (O_ORDERKEY) COMMENT = 'Commandes clients',
+    customer AS DB_YAR.CORTEX.CUSTOMER PRIMARY KEY (C_CUSTKEY)  COMMENT = 'Clients',
+    nation   AS DB_YAR.CORTEX.NATION   PRIMARY KEY (N_NATIONKEY) COMMENT = 'Pays',
+    region   AS DB_YAR.CORTEX.REGION   PRIMARY KEY (R_REGIONKEY) COMMENT = 'Regions du monde'
   )
   RELATIONSHIPS (
     orders_customer AS orders (O_CUSTKEY)     REFERENCES customer,
@@ -125,7 +125,7 @@ SELECT * FROM SEMANTIC_VIEW(
 -- -----------------------------------------------------------------------------
 -- 3. CORTEX AGENT : orchestre les outils (Analyst + Search) et compose la reponse
 -- -----------------------------------------------------------------------------
-CREATE OR REPLACE AGENT DEMO_FORMATION.CORTEX.AGENT_VENTES
+CREATE OR REPLACE AGENT DB_YAR.CORTEX.AGENT_VENTES
   COMMENT = 'Agent de demo formation : ventes TPCH + avis clients'
   FROM SPECIFICATION
   $$
@@ -156,18 +156,18 @@ CREATE OR REPLACE AGENT DEMO_FORMATION.CORTEX.AGENT_VENTES
 
   tool_resources:
     AnalysteVentes:
-      semantic_view: "DEMO_FORMATION.CORTEX.SV_TPCH_SALES"
+      semantic_view: "DB_YAR.CORTEX.SV_TPCH_SALES"
       execution_environment:
         type: "warehouse"
-        warehouse: "WH_DEMO"
+        warehouse: "COMPUTE_WH"
     RechercheAvis:
-      search_service: "DEMO_FORMATION.CORTEX.REVIEWS_SEARCH"
+      search_service: "DB_YAR.CORTEX.REVIEWS_SEARCH"
       max_results: "5"
       id_column: "REVIEW_ID"
       title_column: "P_NAME"
   $$;
 
-DESCRIBE AGENT DEMO_FORMATION.CORTEX.AGENT_VENTES;
+DESCRIBE AGENT DB_YAR.CORTEX.AGENT_VENTES;
 -- Test : AI & ML > Agents > AGENT_VENTES > Playground, ou Snowflake Intelligence :
 --   "Quel pays genere le plus de CA, et que disent les clients de la livraison ?"
 --   -> montrer la trace : choix des outils, SQL genere, passages retrouves.
@@ -186,6 +186,6 @@ DESCRIBE AGENT DEMO_FORMATION.CORTEX.AGENT_VENTES;
 -- Couts : SNOWFLAKE.ACCOUNT_USAGE.CORTEX_SEARCH_SERVING_USAGE_HISTORY,
 --         CORTEX_ANALYST_USAGE_HISTORY, CORTEX_FUNCTIONS_USAGE_HISTORY
 -- Nettoyage
--- DROP AGENT DEMO_FORMATION.CORTEX.AGENT_VENTES;
--- DROP CORTEX SEARCH SERVICE DEMO_FORMATION.CORTEX.REVIEWS_SEARCH;   -- facture tant qu'il existe
+-- DROP AGENT DB_YAR.CORTEX.AGENT_VENTES;
+-- DROP CORTEX SEARCH SERVICE DB_YAR.CORTEX.REVIEWS_SEARCH;   -- facture tant qu'il existe
 -- -----------------------------------------------------------------------------

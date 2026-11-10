@@ -1,0 +1,29 @@
+# Définition de projet Snowflake CLI (definition_version 2)
+# Déploiement depuis ce dossier :  snow streamlit deploy --replace
+# Exécution en conteneur (container runtime) : dépendances déclarées dans pyproject.toml
+definition_version: 2
+
+entities:
+  cockpit_pannes_reseau:
+    type: streamlit
+    identifier:
+      name: COCKPIT_PANNES_RESEAU
+      database: DB_YAR
+      schema: APPS
+    title: "Cockpit fiabilité réseau Lyon"
+    comment: "Démo Cortex Agent : cockpit fiabilité, alertes hebdomadaires, préparation météo"
+
+    # Warehouse utilisé pour les requêtes SQL de l'app
+    query_warehouse: COMPUTE_WH
+
+    # Exécution en conteneur
+    runtime_name: SYSTEM$ST_CONTAINER_RUNTIME_PY3_11
+    compute_pool: SYSTEM_COMPUTE_POOL_CPU          # pool par défaut du compte, à adapter si besoin
+    external_access_integrations:
+      - PYPI_ACCESS_INTEGRATION                     # installation des paquets depuis PyPI
+
+    main_file: streamlit_app.py
+    artifacts:
+      - streamlit_app.py
+      - pyproject.toml
+      - .streamlit/config.toml

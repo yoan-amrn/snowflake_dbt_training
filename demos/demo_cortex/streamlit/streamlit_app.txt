@@ -1,0 +1,786 @@
+"""
+Cockpit fiabilité réseau - Démo Cortex Agent (Streamlit in Snowflake)
+
+3 onglets :
+  1. Cockpit          : KPI + tendances, bouton "Pourquoi ?" qui interroge l'agent
+  2. Alertes semaine  : détection d'anomalies (calcul déterministe), diagnostic par l'agent
+  3. Préparation météo: risque historique par événement météo, plan de préparation par l'agent
++ une zone de question libre à l'agent en bas de page.
+
+Les chiffres affichés sont calculés en SQL sur DB_YAR.MAINTENANCE.
+L'agent DB_YAR.AGENTS.AGENT_PANNES_RESEAU_LYON n'est sollicité que pour l'explication.
+"""
+
+import json
+import os
+from datetime import date, timedelta
+
+import altair as alt
+import pandas as pd
+import streamlit as st
+
+try:
+    import _snowflake  # runtime "warehouse" de Streamlit in Snowflake uniquement
+except ImportError:  # runtime conteneur ou exécution locale
+    _snowflake = None
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+S = "DB_YAR.MAINTENANCE"
+AGENT_FQN = "DB_YAR.AGENTS.AGENT_PANNES_RESEAU_LYON"
+AGENT_ENDPOINT = "/api/v2/databases/DB_YAR/schemas/AGENTS/agents/AGENT_PANNES_RESEAU_LYON:run"
+AGENT_TIMEOUT_MS = 180_000
+SPCS_TOKEN_PATH = "/snowflake/session/token"  # jeton OAuth fourni dans le conteneur
+MODES = ["Métro", "Tramway", "Funiculaire"]
+SEMAINES_HISTO = 26  # semaines de référence pour la détection d'anomalies
+
+st.set_page_config(page_title="Cockpit fiabilité réseau", page_icon="🚇", layout="wide")
+
+
+@st.cache_resource
+def get_session():
+    try:
+        from snowflake.snowpark.context import get_active_session
+        return get_active_session()
+    except Exception:  # noqa: BLE001 - runtime conteneur / local
+        return st.connection("snowflake").session()
+
+
+session = get_session()
+
+if "reponses" not in st.session_state:
+    st.session_state.reponses = {}
+if "chat" not in st.session_state:
+    st.session_state.chat = []
+
+
+# ---------------------------------------------------------------------------
+# Utilitaires
+# ---------------------------------------------------------------------------
+@st.cache_data(ttl=600, show_spinner=False)
+def run_query(query: str) -> pd.DataFrame:
+    return session.sql(query).to_pandas()
+
+
+def fv(x):
+    """Convertit en float (None si vide)."""
+    try:
+        if x is None or pd.isna(x):
+            return None
+        return float(x)
+    except (TypeError, ValueError):
+        return None
+
+
+def fnum(x, dec=0, suffixe=""):
+    x = fv(x)
+    if x is None:
+        return "–"
+    s = f"{x:,.{dec}f}".replace(",", " ").replace(".", ",")
+    return f"{s}{suffixe}"
+
+
+def fdate(d) -> str:
+    return pd.Timestamp(d).strftime("%d/%m/%Y")
+
+
+def sql_list(values) -> str:
+    return ", ".join("'" + str(v).replace("'", "''") + "'" for v in values)
+
+
+def variation(actuel, precedent):
+    a, p = fv(actuel), fv(precedent)
+    if a is None or not p:
+        return None
+    return f"{(a - p) / p * 100:+.0f} % vs période précédente"
+
+
+# ---------------------------------------------------------------------------
+# Appel de l'agent Cortex (API REST agent:run)
+# ---------------------------------------------------------------------------
+def _parse_events(content):
+    """Transforme la réponse brute de l'API en liste (event, data)."""
+    data = content
+    if isinstance(content, (str, bytes)):
+        try:
+            data = json.loads(content)
+        except (ValueError, TypeError):
+            data = None
+
+    events = []
+    if isinstance(data, list):
+        for ev in data:
+            if not isinstance(ev, dict):
+                continue
+            d = ev.get("data")
+            if isinstance(d, str):
+                try:
+                    d = json.loads(d)
+                except ValueError:
+                    pass
+            events.append((ev.get("event"), d))
+        return events
+    if isinstance(data, dict):  # réponse non streamée
+        return [("response", data)]
+
+    # Flux SSE brut : "event: xxx" / "data: {...}"
+    courant = None
+    for ligne in str(content).splitlines():
+        if ligne.startswith("event:"):
+            courant = ligne[6:].strip()
+        elif ligne.startswith("data:"):
+            brut = ligne[5:].strip()
+            try:
+                d = json.loads(brut)
+            except ValueError:
+                d = brut
+            events.append((courant, d))
+    return events
+
+
+def _chercher_cle(obj, cle):
+    """Récupère récursivement toutes les valeurs d'une clé (ex : 'sql')."""
+    trouve = []
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if k == cle and isinstance(v, str) and v.strip():
+                trouve.append(v)
+            else:
+                trouve.extend(_chercher_cle(v, cle))
+    elif isinstance(obj, list):
+        for v in obj:
+            trouve.extend(_chercher_cle(v, cle))
+    return trouve
+
+
+def _extraire_reponse(events):
+    res = {"texte": "", "graphiques": [], "tableaux": [], "sql": [], "erreur": None}
+
+    final = next((d for e, d in events if e == "response" and isinstance(d, dict) and d.get("content")), None)
+    if final:
+        textes = []
+        for item in final["content"]:
+            t = item.get("type")
+            if t == "text":
+                textes.append(item.get("text", ""))
+            elif t == "chart":
+                spec = (item.get("chart") or {}).get("chart_spec")
+                if spec:
+                    res["graphiques"].append(spec)
+            elif t == "table":
+                tab = item.get("table") or {}
+                res["tableaux"].append((tab.get("title"), tab.get("result_set")))
+            elif t == "tool_result":
+                res["sql"].extend(_chercher_cle(item, "sql"))
+        res["texte"] = "\n\n".join(x for x in textes if x)
+    else:
+        textes, deltas = {}, []
+        for e, d in events:
+            if not isinstance(d, dict):
+                continue
+            if e == "response.text":
+                textes[d.get("content_index", len(textes))] = d.get("text", "")
+            elif e == "response.text.delta":
+                deltas.append(d.get("text", ""))
+            elif e == "response.chart" and d.get("chart_spec"):
+                res["graphiques"].append(d["chart_spec"])
+            elif e == "response.table":
+                res["tableaux"].append((d.get("title"), d.get("result_set")))
+            elif e == "response.tool_result":
+                res["sql"].extend(_chercher_cle(d, "sql"))
+            elif e == "message.delta":  # ancien format
+                for c in (d.get("delta") or {}).get("content", []):
+                    if c.get("type") == "text":
+                        deltas.append(c.get("text", ""))
+                    res["sql"].extend(_chercher_cle(c, "sql"))
+        res["texte"] = "\n\n".join(textes[k] for k in sorted(textes)) if textes else "".join(deltas)
+
+    for e, d in events:
+        if e == "error":
+            res["erreur"] = d.get("message") if isinstance(d, dict) else str(d)
+
+    res["sql"] = list(dict.fromkeys(res["sql"]))  # dédoublonnage
+    return res
+
+
+def _appel_api_warehouse(payload):
+    """Runtime warehouse : API REST via le module interne _snowflake."""
+    resp = _snowflake.send_snow_api_request("POST", AGENT_ENDPOINT, {}, {}, payload, None, AGENT_TIMEOUT_MS)
+    return resp.get("status"), resp.get("content", "")
+
+
+def _appel_api_conteneur(payload):
+    """Runtime conteneur : API REST avec le jeton OAuth de la session du conteneur."""
+    import requests
+
+    with open(SPCS_TOKEN_PATH, encoding="utf-8") as f:
+        token = f.read().strip()
+    r = requests.post(
+        f"https://{os.environ['SNOWFLAKE_HOST']}{AGENT_ENDPOINT}",
+        json=payload,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "X-Snowflake-Authorization-Token-Type": "OAUTH",
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+        },
+        timeout=AGENT_TIMEOUT_MS / 1000,
+    )
+    return r.status_code, r.text
+
+
+def _appel_sql(payload):
+    """Repli : fonction SQL d'exécution d'agent."""
+    row = session.sql(
+        "SELECT SNOWFLAKE.CORTEX.DATA_AGENT_RUN(?, ?) AS R", params=[AGENT_FQN, json.dumps(payload)]
+    ).collect()[0]
+    return 200, row["R"]
+
+
+def appeler_agent(question: str, historique=None) -> dict:
+    messages = [
+        {"role": m["role"], "content": [{"type": "text", "text": m["text"]}]}
+        for m in (historique or []) if m.get("text")
+    ]
+    messages.append({"role": "user", "content": [{"type": "text", "text": question}]})
+    payload = {"messages": messages}
+
+    # Méthodes d'appel, de la plus adaptée au runtime à la plus générique
+    methodes = []
+    if _snowflake is not None:
+        methodes.append(("API (warehouse)", _appel_api_warehouse))
+    if os.path.exists(SPCS_TOKEN_PATH) and os.environ.get("SNOWFLAKE_HOST"):
+        methodes.append(("API (conteneur)", _appel_api_conteneur))
+    methodes.append(("SQL DATA_AGENT_RUN", _appel_sql))
+
+    erreurs = []
+    for nom, methode in methodes:
+        try:
+            status, content = methode(payload)
+        except Exception as exc:  # noqa: BLE001
+            erreurs.append(f"{nom} : {exc}")
+            continue
+        if status != 200:
+            erreurs.append(f"{nom} : HTTP {status} {str(content)[:500]}")
+            continue
+        return _extraire_reponse(_parse_events(content))
+
+    return {"texte": "", "graphiques": [], "tableaux": [], "sql": [],
+            "erreur": "Appel de l'agent impossible.\n\n" + "\n\n".join(erreurs)}
+
+
+def _result_set_to_df(rs):
+    try:
+        cols = [c["name"] for c in rs["resultSetMetaData"]["rowType"]]
+        return pd.DataFrame(rs["data"], columns=cols)
+    except (KeyError, TypeError):
+        return None
+
+
+def afficher_reponse(res: dict):
+    if res.get("erreur"):
+        st.error(res["erreur"])
+    if res.get("texte"):
+        st.markdown(res["texte"])
+    for spec in res.get("graphiques", []):
+        try:
+            st.vega_lite_chart(json.loads(spec) if isinstance(spec, str) else spec, use_container_width=True)
+        except Exception:  # noqa: BLE001
+            pass
+    for titre, rs in res.get("tableaux", []):
+        df = _result_set_to_df(rs)
+        if df is not None and not df.empty:
+            if titre:
+                st.caption(titre)
+            st.dataframe(df, use_container_width=True, hide_index=True)
+    if res.get("sql"):
+        with st.expander("SQL généré par Cortex Analyst"):
+            for q in res["sql"]:
+                st.code(q, language="sql")
+
+
+def bloc_agent(cle: str, question: str, libelle_bouton: str, aide: str = None):
+    """Bouton qui envoie `question` à l'agent et affiche la réponse (persistée)."""
+    if st.button(libelle_bouton, key=f"btn_{cle}", type="primary", help=aide):
+        with st.spinner("L'agent analyse les données…"):
+            st.session_state.reponses[cle] = {"question": question, "reponse": appeler_agent(question)}
+    if cle in st.session_state.reponses:
+        r = st.session_state.reponses[cle]
+        with st.container(border=True):
+            st.caption(f"🤖 Question envoyée à l'agent : « {r['question']} »")
+            afficher_reponse(r["reponse"])
+
+
+# ---------------------------------------------------------------------------
+# En-tête et filtres
+# ---------------------------------------------------------------------------
+bornes = run_query(f"SELECT MIN(DATE_INCIDENT) AS DMIN, MAX(DATE_INCIDENT) AS DMAX FROM {S}.FACT_INCIDENT")
+DATE_MIN = pd.Timestamp(bornes.iloc[0]["DMIN"]).date()
+DATE_MAX = pd.Timestamp(bornes.iloc[0]["DMAX"]).date()
+
+with st.sidebar:
+    st.header("Filtres")
+    periode = st.selectbox(
+        "Période d'analyse",
+        ["3 derniers mois", "6 derniers mois", "12 derniers mois", "24 derniers mois"],
+        index=2,
+    )
+    modes = st.multiselect("Modes de transport", MODES, default=MODES)
+    st.divider()
+    st.caption(f"Données disponibles du {fdate(DATE_MIN)} au {fdate(DATE_MAX)}")
+    st.caption("Agent : `DB_YAR.AGENTS.AGENT_PANNES_RESEAU_LYON`")
+
+if not modes:
+    st.warning("Sélectionnez au moins un mode de transport.")
+    st.stop()
+
+NB_MOIS = int(periode.split()[0])
+D_FIN = DATE_MAX + timedelta(days=1)  # borne exclusive
+D_DEBUT = (pd.Timestamp(D_FIN) - pd.DateOffset(months=NB_MOIS)).date()
+D_DEBUT_PREC = (pd.Timestamp(D_DEBUT) - pd.DateOffset(months=NB_MOIS)).date()
+FILTRE_MODE = f"AND l.MODE_TRANSPORT IN ({sql_list(modes)})"
+TXT_MODES = "" if len(modes) == len(MODES) else f" (modes : {', '.join(modes)})"
+
+st.title("🚇 Cockpit fiabilité du réseau métro / tram de Lyon")
+st.caption(
+    f"Période : du {fdate(D_DEBUT)} au {fdate(DATE_MAX)}{TXT_MODES} · "
+    "Indicateurs calculés en SQL, explications par Cortex Agent"
+)
+
+onglet_cockpit, onglet_alertes, onglet_meteo = st.tabs(
+    ["📊 Cockpit", "🚨 Alertes de la semaine", "🌦️ Préparation météo"]
+)
+
+# ===========================================================================
+# 1. COCKPIT
+# ===========================================================================
+with onglet_cockpit:
+
+    def kpis(d1, d2) -> pd.Series:
+        q = f"""
+        WITH inc AS (
+          SELECT i.* FROM {S}.FACT_INCIDENT i
+          JOIN {S}.DIM_LIGNE l ON l.LIGNE_ID = i.LIGNE_ID
+          WHERE i.DATE_INCIDENT >= '{d1}' AND i.DATE_INCIDENT < '{d2}' {FILTRE_MODE}
+        )
+        SELECT
+          (SELECT COUNT(*) FROM inc)                                         AS NB,
+          (SELECT COUNT_IF(GRAVITE >= 3) FROM inc)                           AS CRIT,
+          (SELECT AVG(DUREE_MINUTES) FROM inc)                               AS MTTR,
+          (SELECT COUNT_IF(IMPACT_SERVICE = 'Interruption totale') FROM inc) AS INTERR,
+          (SELECT SUM(NB_VOYAGEURS_IMPACTES) FROM inc)                       AS VOY,
+          (SELECT SUM(t.COUT_MAIN_OEUVRE_EUR + t.COUT_PIECES_EUR)
+             FROM {S}.FACT_INTERVENTION t JOIN inc ON inc.INCIDENT_ID = t.INCIDENT_ID) AS COUT
+        """
+        return run_query(q).iloc[0]
+
+    k, kp = kpis(D_DEBUT, D_FIN), kpis(D_DEBUT_PREC, D_DEBUT)
+
+    c = st.columns(6)
+    c[0].metric("Incidents", fnum(k.NB), variation(k.NB, kp.NB), delta_color="inverse")
+    c[1].metric("Incidents critiques (G≥3)", fnum(k.CRIT), variation(k.CRIT, kp.CRIT), delta_color="inverse")
+    c[2].metric("MTTR", fnum((fv(k.MTTR) or 0) / 60, 1, " h"), variation(k.MTTR, kp.MTTR), delta_color="inverse")
+    c[3].metric("Interruptions totales", fnum(k.INTERR), variation(k.INTERR, kp.INTERR), delta_color="inverse")
+    c[4].metric("Voyageurs impactés", fnum(k.VOY), variation(k.VOY, kp.VOY), delta_color="inverse")
+    c[5].metric("Coût maintenance corrective", fnum(k.COUT, 0, " €"), variation(k.COUT, kp.COUT), delta_color="inverse")
+
+    # --- Tendance mensuelle par ligne
+    df_mois = run_query(f"""
+        SELECT DATE_TRUNC('month', i.DATE_INCIDENT) AS MOIS, l.NOM_LIGNE, COUNT(*) AS NB
+        FROM {S}.FACT_INCIDENT i JOIN {S}.DIM_LIGNE l ON l.LIGNE_ID = i.LIGNE_ID
+        WHERE i.DATE_INCIDENT >= '{D_DEBUT}' AND i.DATE_INCIDENT < '{D_FIN}' {FILTRE_MODE}
+        GROUP BY 1, 2
+    """)
+    top_lignes = df_mois.groupby("NOM_LIGNE")["NB"].sum().sort_values(ascending=False).index.tolist()
+
+    g1, g2 = st.columns([3, 2])
+    with g1:
+        st.subheader("Évolution mensuelle des incidents")
+        choix = st.multiselect("Lignes", top_lignes, default=top_lignes[:5], key="lignes_tendance")
+        if choix:
+            st.altair_chart(
+                alt.Chart(df_mois[df_mois.NOM_LIGNE.isin(choix)])
+                .mark_line(point=True)
+                .encode(
+                    x=alt.X("MOIS:T", title=None),
+                    y=alt.Y("NB:Q", title="Incidents"),
+                    color=alt.Color("NOM_LIGNE:N", title="Ligne"),
+                    tooltip=[alt.Tooltip("MOIS:T", format="%m/%Y", title="Mois"), "NOM_LIGNE", "NB"],
+                )
+                .properties(height=320),
+                use_container_width=True,
+            )
+            st.caption("Le dernier mois peut être partiel.")
+
+    with g2:
+        st.subheader("Incidents par famille d'équipement")
+        df_fam = run_query(f"""
+            SELECT e.FAMILLE_EQUIPEMENT, COUNT(*) AS NB, ROUND(AVG(i.DUREE_MINUTES)) AS MTTR_MIN
+            FROM {S}.FACT_INCIDENT i
+            JOIN {S}.DIM_LIGNE l ON l.LIGNE_ID = i.LIGNE_ID
+            JOIN {S}.DIM_EQUIPEMENT e ON e.EQUIPEMENT_ID = i.EQUIPEMENT_ID
+            WHERE i.DATE_INCIDENT >= '{D_DEBUT}' AND i.DATE_INCIDENT < '{D_FIN}' {FILTRE_MODE}
+            GROUP BY 1
+        """)
+        st.altair_chart(
+            alt.Chart(df_fam)
+            .mark_bar()
+            .encode(
+                x=alt.X("NB:Q", title="Incidents"),
+                y=alt.Y("FAMILLE_EQUIPEMENT:N", sort="-x", title=None),
+                tooltip=[alt.Tooltip("FAMILLE_EQUIPEMENT", title="Famille"), alt.Tooltip("NB", title="Incidents"),
+                         alt.Tooltip("MTTR_MIN", title="MTTR (min)")],
+            )
+            .properties(height=360),
+            use_container_width=True,
+        )
+
+    # --- Tableau par ligne
+    st.subheader("Synthèse par ligne")
+    df_lignes = run_query(f"""
+        WITH inc AS (
+          SELECT i.*, l.NOM_LIGNE, l.MODE_TRANSPORT
+          FROM {S}.FACT_INCIDENT i JOIN {S}.DIM_LIGNE l ON l.LIGNE_ID = i.LIGNE_ID
+          WHERE i.DATE_INCIDENT >= '{D_DEBUT}' AND i.DATE_INCIDENT < '{D_FIN}' {FILTRE_MODE}
+        ),
+        cout AS (
+          SELECT INCIDENT_ID, SUM(COUT_MAIN_OEUVRE_EUR + COUT_PIECES_EUR) AS C
+          FROM {S}.FACT_INTERVENTION GROUP BY 1
+        )
+        SELECT inc.NOM_LIGNE                                       AS "Ligne",
+               inc.MODE_TRANSPORT                                  AS "Mode",
+               COUNT(*)                                            AS "Incidents",
+               COUNT_IF(inc.GRAVITE >= 3)                          AS "Critiques",
+               ROUND(AVG(inc.DUREE_MINUTES))                       AS "MTTR (min)",
+               COUNT_IF(inc.IMPACT_SERVICE = 'Interruption totale') AS "Interruptions totales",
+               SUM(inc.NB_VOYAGEURS_IMPACTES)                      AS "Voyageurs impactés",
+               ROUND(SUM(cout.C))                                  AS "Coût (€)"
+        FROM inc LEFT JOIN cout ON cout.INCIDENT_ID = inc.INCIDENT_ID
+        GROUP BY 1, 2
+        ORDER BY 3 DESC
+    """)
+    st.dataframe(df_lignes, use_container_width=True, hide_index=True)
+
+    # --- Explication par l'agent
+    st.subheader("🔎 Pourquoi ? Demander une explication à l'agent")
+    ANGLES = {
+        "Évolution et pics de pannes":
+            "Comment a évolué le nombre de pannes {cible} entre le {d1} et le {d2} ? "
+            "Identifie les pics éventuels et explique-les (types d'équipements, types de pannes, stations, météo).",
+        "Principales causes de pannes":
+            "Quelles sont les principales causes de pannes {cible} entre le {d1} et le {d2} ? "
+            "Détaille par type d'équipement et type de panne avec le MTTR, puis propose des actions de fiabilisation.",
+        "Impact sur les voyageurs":
+            "Quels incidents ont eu le plus d'impact sur les voyageurs {cible} entre le {d1} et le {d2} ? "
+            "Analyse par type de panne, tranche horaire et station.",
+        "Coûts de maintenance":
+            "Quels sont les principaux postes de coût de maintenance corrective {cible} entre le {d1} et le {d2} ? "
+            "Détaille par type d'équipement, type de panne et équipe de maintenance.",
+        "Comparaison avec la période précédente":
+            "Compare les pannes {cible} entre le {d1} et le {d2} avec la période précédente de même durée "
+            "(du {dp1} au {dp2}) : qu'est-ce qui s'est amélioré ou dégradé, et pourquoi ?",
+    }
+    e1, e2 = st.columns(2)
+    cible_sel = e1.selectbox("Périmètre", ["Tout le réseau"] + top_lignes, key="cible_cockpit")
+    angle_sel = e2.selectbox("Question", list(ANGLES.keys()), key="angle_cockpit")
+    cible_txt = f"sur l'ensemble du réseau{TXT_MODES}" if cible_sel == "Tout le réseau" else f"sur le {cible_sel}"
+    question_cockpit = ANGLES[angle_sel].format(
+        cible=cible_txt, d1=fdate(D_DEBUT), d2=fdate(DATE_MAX),
+        dp1=fdate(D_DEBUT_PREC), dp2=fdate(D_DEBUT - timedelta(days=1)),
+    )
+    bloc_agent("cockpit", question_cockpit, "🤖 Pourquoi ?")
+
+# ===========================================================================
+# 2. ALERTES DE LA SEMAINE
+# ===========================================================================
+with onglet_alertes:
+    st.subheader("Détection d'anomalies hebdomadaire")
+    st.caption(
+        f"Une alerte est levée quand le nombre d'incidents de la semaine dépasse la moyenne des "
+        f"{SEMAINES_HISTO} semaines précédentes de plus de 2 écarts-types (avec au moins 3 incidents). "
+        "Le calcul est fait en SQL / Python ; l'agent intervient uniquement pour le diagnostic."
+    )
+
+    date_min_ref = DATE_MIN + timedelta(days=7 * (SEMAINES_HISTO + 1))
+    if "ref_fin" not in st.session_state:
+        st.session_state.ref_fin = DATE_MAX
+
+    def _aller_pic_cbtc():
+        cible = (pd.Timestamp(date.today()) - pd.DateOffset(months=18) + pd.Timedelta(days=21)).date()
+        st.session_state.ref_fin = min(max(cible, date_min_ref), DATE_MAX)
+
+    a1, a2, a3 = st.columns([1, 2, 1])
+    ref_fin = a1.date_input("Semaine se terminant le", key="ref_fin",
+                            min_value=date_min_ref, max_value=DATE_MAX, format="DD/MM/YYYY")
+    granularite = a2.radio("Granularité", ["Ligne × type d'équipement", "Station × type d'équipement"],
+                           horizontal=True)
+    a3.button("💡 Exemple démo : pic ligne B", on_click=_aller_pic_cbtc,
+              help="Positionne la semaine de référence ~18 mois en arrière")
+
+    ref_debut = ref_fin - timedelta(days=6)
+    cles = ["NOM_LIGNE", "TYPE_EQUIPEMENT"] if granularite.startswith("Ligne") \
+        else ["NOM_STATION", "NOM_LIGNE", "TYPE_EQUIPEMENT"]
+
+    df_sem = run_query(f"""
+        SELECT l.NOM_LIGNE, s.NOM_STATION, e.TYPE_EQUIPEMENT,
+               FLOOR(DATEDIFF(day, i.DATE_INCIDENT, '{ref_fin}'::DATE) / 7) AS SEMAINE_IDX,
+               COUNT(*) AS NB
+        FROM {S}.FACT_INCIDENT i
+        JOIN {S}.DIM_LIGNE l      ON l.LIGNE_ID = i.LIGNE_ID
+        JOIN {S}.DIM_EQUIPEMENT e ON e.EQUIPEMENT_ID = i.EQUIPEMENT_ID
+        LEFT JOIN {S}.DIM_STATION s ON s.STATION_ID = i.STATION_ID
+        WHERE i.DATE_INCIDENT <= '{ref_fin}'
+          AND i.DATE_INCIDENT > DATEADD(day, -{7 * (SEMAINES_HISTO + 1)}, '{ref_fin}'::DATE)
+          {FILTRE_MODE}
+        GROUP BY 1, 2, 3, 4
+    """)
+
+    if df_sem.empty:
+        st.info("Aucun incident sur la période.")
+    else:
+        df_sem["SEMAINE_IDX"] = df_sem["SEMAINE_IDX"].astype(int)
+        df_sem["NB"] = df_sem["NB"].astype(int)
+        df_sem["NOM_STATION"] = df_sem["NOM_STATION"].fillna("(sans station)")
+        semaines = list(range(SEMAINES_HISTO + 1))
+        agg = (df_sem.groupby(cles + ["SEMAINE_IDX"])["NB"].sum()
+               .unstack(fill_value=0).reindex(columns=semaines, fill_value=0))
+        base = agg[semaines[1:]]
+        stats = pd.DataFrame({
+            "NB_SEMAINE": agg[0],
+            "MOYENNE": base.mean(axis=1),
+            "ECART_TYPE": base.std(axis=1, ddof=0),
+        })
+        stats["Z"] = (stats.NB_SEMAINE - stats.MOYENNE) / stats.ECART_TYPE.clip(lower=0.5)
+        stats["RATIO"] = stats.NB_SEMAINE / stats.MOYENNE.clip(lower=0.1)
+        stats = stats.sort_values("Z", ascending=False)
+        alertes = stats[(stats.NB_SEMAINE >= 3) & (stats.Z >= 2)]
+
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Semaine analysée", f"{fdate(ref_debut)} → {fdate(ref_fin)}")
+        m2.metric("Incidents sur la semaine", fnum(stats.NB_SEMAINE.sum()))
+        m3.metric("Alertes détectées", len(alertes))
+
+        if alertes.empty:
+            st.success("Aucune anomalie significative cette semaine. Voici les 5 plus forts écarts :")
+            a_afficher = stats.head(5)
+        else:
+            a_afficher = alertes.head(10)
+
+        def libelle(cle_tuple):
+            d = dict(zip(cles, cle_tuple))
+            if "NOM_STATION" in d:
+                return (f"{d['TYPE_EQUIPEMENT']} · station {d['NOM_STATION']} ({d['NOM_LIGNE']})",
+                        f"les équipements de type « {d['TYPE_EQUIPEMENT']} » de la station "
+                        f"{d['NOM_STATION']} ({d['NOM_LIGNE']})")
+            return (f"{d['TYPE_EQUIPEMENT']} · {d['NOM_LIGNE']}",
+                    f"les équipements de type « {d['TYPE_EQUIPEMENT']} » du {d['NOM_LIGNE']}")
+
+        for rang, (cle_tuple, a) in enumerate(a_afficher.iterrows()):
+            cle_tuple = cle_tuple if isinstance(cle_tuple, tuple) else (cle_tuple,)
+            titre, perimetre = libelle(cle_tuple)
+            with st.container(border=True):
+                c1, c2 = st.columns([3, 2])
+                with c1:
+                    st.markdown(
+                        f"**{'🚨' if a.Z >= 2 and a.NB_SEMAINE >= 3 else '📈'} {titre}**  \n"
+                        f"**{int(a.NB_SEMAINE)}** incidents cette semaine contre **{a.MOYENNE:.1f}** "
+                        f"en moyenne (×{a.RATIO:.1f} · z = {a.Z:.1f})"
+                    )
+                with c2:
+                    serie = agg.loc[cle_tuple]
+                    df_spark = pd.DataFrame({"Semaine": [-s for s in semaines], "Incidents": serie.values,
+                                             "Courante": [s == 0 for s in semaines]})
+                    st.altair_chart(
+                        alt.Chart(df_spark).mark_bar().encode(
+                            x=alt.X("Semaine:O", axis=None),
+                            y=alt.Y("Incidents:Q", axis=None),
+                            color=alt.condition("datum.Courante", alt.value("#d62728"), alt.value("#9ecae1")),
+                            tooltip=["Semaine", "Incidents"],
+                        ).properties(height=60),
+                        use_container_width=True,
+                    )
+                question_alerte = (
+                    f"Alerte : {perimetre} ont connu {int(a.NB_SEMAINE)} incidents sur la semaine du "
+                    f"{fdate(ref_debut)} au {fdate(ref_fin)}, contre {a.MOYENNE:.1f} par semaine en moyenne "
+                    f"sur les {SEMAINES_HISTO} semaines précédentes. Analyse les incidents de cette semaine "
+                    "(types de pannes, équipements et stations concernés, jours et heures, météo, gravité, durée), "
+                    "compare-les à l'historique et indique s'il s'agit d'un problème ponctuel ou d'une dérive "
+                    "durable. Propose des actions."
+                )
+                bloc_agent(f"alerte_{ref_fin}_{granularite}_{rang}", question_alerte, "🩺 Diagnostiquer")
+
+        if len(alertes) > 1:
+            st.divider()
+            liste = "; ".join(
+                f"{libelle(ct if isinstance(ct, tuple) else (ct,))[0]} : {int(r.NB_SEMAINE)} incidents "
+                f"(moyenne {r.MOYENNE:.1f})"
+                for ct, r in alertes.head(10).iterrows()
+            )
+            question_synthese = (
+                f"Sur la semaine du {fdate(ref_debut)} au {fdate(ref_fin)}, les alertes suivantes ont été "
+                f"détectées : {liste}. Fais une synthèse pour le responsable maintenance : y a-t-il une cause "
+                "commune (météo, ligne, équipement, équipe) ? Classe les alertes par priorité et propose un plan "
+                "d'action."
+            )
+            bloc_agent(f"synthese_{ref_fin}_{granularite}", question_synthese,
+                       "🧭 Synthèse de toutes les alertes")
+
+# ===========================================================================
+# 3. PREPARATION METEO
+# ===========================================================================
+with onglet_meteo:
+    st.subheader("Préparation à un épisode météo")
+    st.caption("Risque estimé à partir de tout l'historique disponible : taux d'incidents les jours de "
+               "l'événement choisi comparé aux jours sans événement météo (RAS).")
+
+    p1, p2, p3 = st.columns(3)
+    scenario = p1.selectbox("Événement prévu", ["Gel", "Neige", "Canicule", "Orage", "Tempête / vent fort", "Pluie"])
+    duree = p2.slider("Durée prévue (jours)", 1, 10, 3)
+    debut = p3.date_input("À partir du", value=date.today() + timedelta(days=1), format="DD/MM/YYYY")
+    axe = st.radio("Analyser par", ["Type d'équipement", "Ligne", "Type de panne"], horizontal=True)
+    col_axe = {"Type d'équipement": "e.TYPE_EQUIPEMENT", "Ligne": "l.NOM_LIGNE", "Type de panne": "p.LIBELLE_PANNE"}[axe]
+
+    df_m = run_query(f"""
+        WITH jours AS (
+          SELECT DATE_JOUR, EVENEMENT_METEO FROM {S}.METEO_JOURNALIERE
+          WHERE DATE_JOUR BETWEEN '{DATE_MIN}' AND '{DATE_MAX}'
+        ),
+        nb_jours AS (SELECT EVENEMENT_METEO, COUNT(*) AS NB_JOURS FROM jours GROUP BY 1),
+        inc AS (
+          SELECT j.EVENEMENT_METEO, {col_axe} AS AXE, COUNT(*) AS NB,
+                 AVG(i.DUREE_MINUTES) AS DUREE_MOY, SUM(i.NB_VOYAGEURS_IMPACTES) AS VOY
+          FROM {S}.FACT_INCIDENT i
+          JOIN jours j              ON j.DATE_JOUR = i.DATE_INCIDENT
+          JOIN {S}.DIM_LIGNE l      ON l.LIGNE_ID = i.LIGNE_ID
+          JOIN {S}.DIM_EQUIPEMENT e ON e.EQUIPEMENT_ID = i.EQUIPEMENT_ID
+          JOIN {S}.REF_TYPE_PANNE p ON p.TYPE_PANNE_ID = i.TYPE_PANNE_ID
+          WHERE j.EVENEMENT_METEO IN ('RAS', {sql_list([scenario])}) {FILTRE_MODE}
+          GROUP BY 1, 2
+        )
+        SELECT inc.*, n.NB_JOURS FROM inc JOIN nb_jours n ON n.EVENEMENT_METEO = inc.EVENEMENT_METEO
+    """)
+    df_nbj = run_query(f"""
+        SELECT EVENEMENT_METEO, COUNT(*) AS NB_JOURS FROM {S}.METEO_JOURNALIERE
+        WHERE DATE_JOUR BETWEEN '{DATE_MIN}' AND '{DATE_MAX}' GROUP BY 1
+    """).set_index("EVENEMENT_METEO")["NB_JOURS"]
+    nb_jours_scen = int(df_nbj.get(scenario, 0))
+    nb_jours_ras = int(df_nbj.get("RAS", 0))
+
+    if nb_jours_scen == 0:
+        st.warning(f"Aucun jour « {scenario} » dans l'historique : impossible d'estimer le risque. "
+                   "Vous pouvez tout de même demander à l'agent.")
+        tableau = pd.DataFrame()
+        total_scen = total_ras = None
+    else:
+        df_m["TAUX"] = df_m["NB"].astype(float) / df_m["NB_JOURS"].astype(float)
+        ras = df_m[df_m.EVENEMENT_METEO == "RAS"].set_index("AXE")
+        scen = df_m[df_m.EVENEMENT_METEO == scenario].set_index("AXE")
+        tableau = pd.DataFrame({
+            "Incidents / jour (normal)": ras["TAUX"],
+            f"Incidents / jour ({scenario})": scen["TAUX"],
+            f"Durée moy. ({scenario}, min)": scen["DUREE_MOY"].astype(float),
+        }).fillna({"Incidents / jour (normal)": 0.0, f"Incidents / jour ({scenario})": 0.0})
+        tableau["Facteur de risque"] = (
+            tableau[f"Incidents / jour ({scenario})"] / tableau["Incidents / jour (normal)"].replace(0, float("nan"))
+        )
+        tableau["Incidents attendus"] = tableau[f"Incidents / jour ({scenario})"] * duree
+        tableau["Incidents supplémentaires"] = (
+            tableau[f"Incidents / jour ({scenario})"] - tableau["Incidents / jour (normal)"]) * duree
+        tableau = tableau.sort_values("Incidents supplémentaires", ascending=False)
+        tableau.index.name = axe
+
+        total_scen = float(df_m.loc[df_m.EVENEMENT_METEO == scenario, "NB"].sum()) / nb_jours_scen
+        total_ras = float(df_m.loc[df_m.EVENEMENT_METEO == "RAS", "NB"].sum()) / max(nb_jours_ras, 1)
+
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric(f"Jours « {scenario} » dans l'historique", nb_jours_scen)
+        k2.metric("Incidents / jour (normal)", fnum(total_ras, 1))
+        k3.metric(f"Incidents / jour ({scenario})", fnum(total_scen, 1),
+                  f"{(total_scen / total_ras - 1) * 100:+.0f} %" if total_ras else None, delta_color="inverse")
+        k4.metric(f"Incidents attendus sur {duree} j", fnum(total_scen * duree, 0),
+                  f"+{fnum((total_scen - total_ras) * duree, 0)} vs normal", delta_color="inverse")
+
+        g1, g2 = st.columns([2, 3])
+        with g1:
+            st.markdown(f"**Facteur de risque par {axe.lower()}** (×1 = comme un jour normal)")
+            top = tableau.head(12).reset_index()
+            st.altair_chart(
+                alt.Chart(top).mark_bar().encode(
+                    x=alt.X("Facteur de risque:Q", title="Facteur de risque"),
+                    y=alt.Y(f"{axe}:N", sort="-x", title=None),
+                    color=alt.condition("datum['Facteur de risque'] > 1.5", alt.value("#d62728"),
+                                        alt.value("#9ecae1")),
+                    tooltip=[axe, alt.Tooltip("Facteur de risque:Q", format=".1f"),
+                             alt.Tooltip("Incidents supplémentaires:Q", format=".1f")],
+                ).properties(height=380),
+                use_container_width=True,
+            )
+        with g2:
+            st.markdown(f"**Impact attendu sur {duree} jour(s)**")
+            st.dataframe(
+                tableau.head(15).style.format({
+                    "Incidents / jour (normal)": "{:.2f}",
+                    f"Incidents / jour ({scenario})": "{:.2f}",
+                    f"Durée moy. ({scenario}, min)": "{:.0f}",
+                    "Facteur de risque": "{:.1f}",
+                    "Incidents attendus": "{:.1f}",
+                    "Incidents supplémentaires": "{:+.1f}",
+                }, na_rep="–"),
+                use_container_width=True,
+            )
+
+    st.divider()
+    exposes = ""
+    if not tableau.empty:
+        exposes = ", ".join(
+            f"{idx} (×{r['Facteur de risque']:.1f})" if pd.notna(r["Facteur de risque"]) else str(idx)
+            for idx, r in tableau.head(5).iterrows()
+        )
+    contexte_histo = (
+        f"D'après l'historique, on observe {total_scen:.1f} incidents par jour lors des jours de type "
+        f"« {scenario} » contre {total_ras:.1f} un jour normal ; les éléments les plus exposés "
+        f"({axe.lower()}) sont : {exposes}. "
+        if total_scen is not None else ""
+    )
+    question_meteo = (
+        f"Un épisode de type « {scenario} » est prévu pendant {duree} jour(s) à partir du {fdate(debut)}"
+        f"{TXT_MODES}. {contexte_histo}"
+        f"En t'appuyant sur l'historique des pannes lors des jours où l'événement météo était « {scenario} », "
+        "détaille les pannes typiques, les lignes et stations les plus touchées, leur durée et leur impact "
+        "voyageurs, puis propose un plan de préparation priorisé : inspections préventives, renforts "
+        "d'astreinte et équipes de maintenance à mobiliser."
+    )
+    bloc_agent(f"meteo_{scenario}_{duree}_{debut}_{axe}", question_meteo, "📋 Générer le plan de préparation")
+
+# ===========================================================================
+# QUESTION LIBRE
+# ===========================================================================
+st.divider()
+t1, t2 = st.columns([5, 1])
+t1.subheader("💬 Question libre à l'agent")
+if t2.button("Nouvelle conversation"):
+    st.session_state.chat = []
+    st.rerun()
+
+for m in st.session_state.chat:
+    with st.chat_message(m["role"]):
+        if m["role"] == "user":
+            st.markdown(m["text"])
+        else:
+            afficher_reponse(m["reponse"])
+
+with st.form("form_chat", clear_on_submit=True):
+    question_libre = st.text_input(
+        "Votre question",
+        placeholder="Ex : Quelles sont les 10 stations avec le plus de pannes d'escalators sur les 12 derniers mois ?",
+    )
+    envoyer = st.form_submit_button("Envoyer")
+
+if envoyer and question_libre.strip():
+    historique = [{"role": m["role"], "text": m["text"]} for m in st.session_state.chat]
+    with st.spinner("L'agent analyse les données…"):
+        rep = appeler_agent(question_libre.strip(), historique)
+    st.session_state.chat.append({"role": "user", "text": question_libre.strip()})
+    st.session_state.chat.append({"role": "assistant", "text": rep.get("texte", ""), "reponse": rep})
+    st.rerun()
